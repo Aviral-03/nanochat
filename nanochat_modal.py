@@ -45,8 +45,8 @@ from modal import App, Image as ModalImage, Volume, Secret
 DEPTH = 20
 
 # ── Data shards ───────────────────────────────────────────────────────────────
-# FineWeb-EDU is split into 1822 parquet shards, each ~250M chars / ~100MB.
-# 240 shards is enough for d24. Use 450 for d26 and 800 for d32.
+# ClimbMix-400B is split into parity parquet shards.
+# 240 shards is enough for d24. Use ~450 for d26 and more for d32.
 NUM_SHARDS = 240
 
 # ── GPU configuration ─────────────────────────────────────────────────────────
@@ -243,7 +243,7 @@ def _curl(url: str, dest: str) -> None:
 # =============================================================================
 
 # ── Picochat config ───────────────────────────────────────────────────────────
-PICO_DEPTH = 8
+PICO_DEPTH = 12
 PICO_SHARDS = 20
 PICO_DEVICE_BATCH_SIZE = 32
 PICO_GPUS = "H100:4"
@@ -309,66 +309,6 @@ def stage_picochat(run_name: str = "picochat_baseline") -> None:
 
 
 # =============================================================================
-# PART 2: RUN ALL 4 ABLATIONS IN SEQUENCE
-# Optional convenience function — runs all 4 back to back.
-# WARNING: You must apply code changes to gpt.py BEFORE calling this.
-# Only use this if you've already made all 4 versions of gpt.py ready,
-# otherwise run stage_picochat individually between code changes.
-# =============================================================================
-
-
-@app.function(
-    image=image,
-    secrets=[secret],
-    volumes={VOLUME_MOUNT: volume},
-    gpu=PICO_GPUS,
-    timeout=60 * 60 * 4,  # 4 hours for all 4 runs back to back
-)
-def stage_all_ablations() -> None:
-    """
-    Convenience: runs ALL 4 picochat ablations back to back in one container.
-
-    IMPORTANT: This assumes your gpt.py already has BOTH PTB and RoPE changes
-    applied. It runs:
-        1. baseline  -- but this would need the ORIGINAL gpt.py, so use
-                        stage_picochat individually instead if you need
-                        true isolation between code changes.
-
-    Recommended approach: use stage_picochat individually between edits.
-    This function is only useful if you manage code variants via flags/configs.
-    """
-    _setup_cache()
-    _python("nanochat.dataset", [f"-n {PICO_SHARDS}"])
-    volume.commit()
-
-    for run_name in [
-        "picochat_baseline",
-        "picochat_ptb",
-        "picochat_rope",
-        "picochat_both",
-    ]:
-        print(f"\n{'=' * 60}")
-        print(f"Starting run: {run_name}")
-        print(f"{'=' * 60}\n")
-        _torchrun(
-            "scripts.base_train",
-            [
-                f"--depth={PICO_DEPTH}",
-                f"--device-batch-size={PICO_DEVICE_BATCH_SIZE}",
-                f"--run={run_name}",
-                "--window-pattern=SSSL",
-                "--save-every=-1",
-                "--sample-every=-1",
-            ],
-            nproc=PICO_N_GPUS,
-        )
-        volume.commit()
-        print(f"Completed: {run_name}")
-
-    print("\nAll 4 ablations complete! Check W&B for results.")
-
-
-# =============================================================================
 # STAGE 0: DATA DOWNLOAD
 # =============================================================================
 
@@ -383,13 +323,12 @@ def stage_all_ablations() -> None:
 )
 def stage_data(num_shards: int = NUM_SHARDS) -> None:
     """
-    Download FineWeb-EDU dataset shards (CPU-only, run once).
+    Download ClimbMix-400B dataset shards (CPU-only, run once).
 
     speedrun.sh:
         python -m nanochat.dataset -n 240
 
-    Each shard is one parquet file of ~250M chars / ~100MB of high-quality
-    educational web text, re-packaged by Karpathy from HuggingFace.
+    Each shard is one parquet file of high-quality educational/web text,
     nanochat.dataset parallelises the download internally and skips shards
     that are already present on disk -- this stage is idempotent.
 
@@ -397,7 +336,7 @@ def stage_data(num_shards: int = NUM_SHARDS) -> None:
     tokens:params ratio (~10x Chinchilla-optimal).
     """
     _setup_cache()
-    print(f"Downloading {num_shards} FineWeb-EDU shards...")
+    print(f"Downloading {num_shards} ClimbMix-400B shards...")
     _python("nanochat.dataset", [f"-n {num_shards}"])
     volume.commit()
     print(f"Done: {num_shards} shards downloaded.")
@@ -417,7 +356,7 @@ def stage_data(num_shards: int = NUM_SHARDS) -> None:
 )
 def stage_tokenizer() -> None:
     """
-    Train a custom BPE tokenizer on 2B characters of FineWeb-EDU.
+    Train a custom BPE tokenizer on 2B characters of ClimbMix-400B.
 
     speedrun.sh:
         python -m scripts.tok_train --max-chars=2000000000
@@ -469,7 +408,7 @@ def stage_pretrain(
     wandb_run: str = WANDB_RUN,
 ) -> None:
     """
-    Pretrain the base GPT model on FineWeb-EDU from random initialization.
+    Pretrain the base GPT model on ClimbMix-400B from random initialization.
 
     speedrun.sh:
         python -m nanochat.report reset
@@ -718,7 +657,7 @@ def main() -> None:
     This is what executes when you run: modal run nanochat_modal.py
 
     Stage order (matches speedrun.sh top to bottom):
-        0. Download FineWeb-EDU shards       (CPU, ~20 min for 240 shards)
+        0. Download ClimbMix-400B shards     (CPU, ~20 min for 240 shards)
         1. Train BPE tokenizer               (1 GPU, ~2 min)
         2. Pretrain base model               (8 GPU, ~3 hours for d24)
         3. Post-pretrain eval (loss + CORE)  (8 GPU, ~30 min)
@@ -744,7 +683,7 @@ def main() -> None:
 
     # Stage 0: Data
     # speedrun.sh: python -m nanochat.dataset -n 240
-    print("[0/5] Downloading FineWeb-EDU shards...")
+    print("[0/5] Downloading ClimbMix-400B shards...")
     stage_data.remote(num_shards=NUM_SHARDS)
 
     # Stage 1: Tokenizer
